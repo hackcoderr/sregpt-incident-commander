@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SREGPT 🚀</title>
+
+    <!-- ✅ Markdown -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+
+    <!-- ✅ Highlight.js -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js/styles/github-dark.css">
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js/lib/highlight.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js/lib/languages/bash.js"></script>
+
+
+    <style>
+        body {
+            margin: 0;
+            background: linear-gradient(135deg, #0f172a, #020617);
+            font-family: 'Segoe UI', sans-serif;
+            color: white;
+        }
+
+        .header {
+            padding: 15px;
+            text-align: center;
+            font-size: 20px;
+            background: #020617;
+            border-bottom: 1px solid #1e293b;
+        }
+
+        .chat-container {
+            max-width: 900px;
+            margin: auto;
+            padding: 20px;
+            padding-bottom: 100px;
+        }
+
+        .message {
+            padding: 15px;
+            margin: 12px 0;
+            border-radius: 12px;
+            line-height: 1.6;
+        }
+
+        .user {
+            background: #1e293b;
+            text-align: right;
+        }
+
+        .bot {
+            background: #020617;
+            border-left: 3px solid #38bdf8;
+        }
+
+        .input-area {
+            position: fixed;
+            bottom: 0;
+            width: 100%;
+            background: #020617;
+            padding: 10px;
+            display: flex;
+            border-top: 1px solid #1e293b;
+        }
+
+        input {
+            flex: 1;
+            padding: 14px;
+            border-radius: 10px;
+            border: none;
+            outline: none;
+            background: #1e293b;
+            color: white;
+        }
+
+        button {
+            margin-left: 10px;
+            padding: 14px;
+            background: #22c55e;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            color: white;
+        }
+
+        .typing {
+            opacity: 0.6;
+            font-style: italic;
+        }
+
+        .feedback {
+            margin-top: 8px;
+        }
+
+        /* ✅ Code block styling */
+        pre {
+            background: #0d1117;
+            padding: 15px;
+            border-radius: 8px;
+            overflow-x: auto;
+            position: relative;
+            border: 1px solid #30363d;
+        }
+
+        code {
+            font-family: monospace;
+            font-size: 14px;
+        }
+
+        .copy-btn {
+            position: absolute;
+            right: 10px;
+            top: 8px;
+            background: #238636;
+            border: none;
+            padding: 5px 10px;
+            cursor: pointer;
+            border-radius: 6px;
+            color: white;
+        }
+
+        h1, h2, h3 {
+            color: #58a6ff;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="header">
+    🤖 SREGPT — Your Troubleshooting Buddy 🚀
+</div>
+
+<div class="chat-container" id="chat"></div>
+
+<div class="input-area">
+    <input id="query" placeholder="Ask your SRE issue... 🔧" 
+        onkeydown="if(event.key==='Enter') send()">
+    <button onclick="send()">Send 🚀</button>
+</div>
+
+<script>
+
+function getBotEmoji(text) {
+    if (text.includes("error") || text.includes("fail")) return "😟";
+    if (text.includes("fix") || text.includes("resolved")) return "😄";
+    return "🤖";
+}
+
+// ✅ Markdown renderer
+function renderMarkdown(text) {
+    let html = marked.parse(text);
+
+    html = html.replace(/<pre><code class="language-(.*?)">/g, (match, lang) => {
+        return `<pre>
+            <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+            <code class="language-${lang}">`;
+    });
+
+    setTimeout(() => {
+        document.querySelectorAll("pre code").forEach((block) => {
+            hljs.highlightElement(block);
+        });
+    }, 0);
+
+    return html;
+}
+
+// ✅ Copy function
+function copyCode(btn) {
+    const code = btn.nextElementSibling.innerText;
+    navigator.clipboard.writeText(code);
+    btn.innerText = "Copied!";
+}
+
+async function send() {
+    const input = document.getElementById("query");
+    const chat = document.getElementById("chat");
+
+    const question = input.value.trim();
+    if (!question) return;
+
+    chat.innerHTML += `<div class="message user">🧑‍💻 ${question}</div>`;
+
+    const botDiv = document.createElement("div");
+    botDiv.className = "message bot typing";
+    botDiv.innerHTML = "🤖 Thinking like an SRE...";
+    chat.appendChild(botDiv);
+
+    input.value = "";
+    chat.scrollTop = chat.scrollHeight;
+
+    const response = await fetch(
+        `http://127.0.0.1:8000/ask-stream?query=${encodeURIComponent(question)}`
+    );
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    let fullText = "";
+    botDiv.innerHTML = "";
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        fullText += chunk;
+
+        botDiv.innerHTML = `${getBotEmoji(fullText)} ${renderMarkdown(fullText)}`;
+        chat.scrollTop = chat.scrollHeight;
+    }
+
+    botDiv.classList.remove("typing");
+
+    // Feedback
+    botDiv.innerHTML += `
+        <div class="feedback">
+            👍 Helpful  
+            👎 Not Helpful  
+            <br><small>Was this useful? Help me improve 🚀</small>
+        </div>
+    `;
+
+    chat.innerHTML += `<div class="message bot">😊 Need deeper debugging? I’m here!</div>`;
+}
+
+</script>
+
+</body>
+</html>
