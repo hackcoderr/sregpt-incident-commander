@@ -6,10 +6,11 @@ import pickle
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import requests
+import json
 
 app = FastAPI()
 
-# ✅ CORS (IMPORTANT for UI)
+# ✅ CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,31 +19,84 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load model + index
+# ✅ Load model + index
 model = SentenceTransformer('all-MiniLM-L6-v2')
 index = faiss.read_index("data/index.faiss")
 data = pickle.load(open("data/data.pkl", "rb"))
 
-# 🔍 Search function
-def search(query, k=3):
+# 🔥 FIX: Normalize data keys (IMPORTANT)
+def normalize_record(record):
+    return {
+        "issue": record.get("issue") or record.get("Issue Subject") or "",
+        "solution": record.get("solution") or record.get("Issue Solution") or "",
+        "ticket": record.get("ticket") or record.get("Ticket ID") or "N/A"
+    }
+
+# 🔍 SEARCH
+def search(query, k=5):
     q_emb = model.encode([query])
     D, I = index.search(np.array(q_emb), k)
 
-    results = [data[i] for i in I[0]]
-    scores = D[0]
+    raw_results = [data[i] for i in I[0]]
+    results = [normalize_record(r) for r in raw_results]
 
+    scores = D[0]
     return results, scores
 
-# 🤖 Streaming LLM (Ollama)
+# 🧠 RESPONSE BUILDER
+def build_response(query, results, scores):
+    best_score = scores[0]
+
+    confidence = round(100 * (1 / (1 + best_score)), 2)
+
+    best = results[0]
+
+    # Related tickets (clean + no duplicates)
+    related = []
+    for r in results[1:5]:
+        t = r.get("ticket", "N/A")
+        if t != "N/A" and t not in related:
+            related.append(t)
+
+    if not related:
+        related = ["N/A"]
+
+    if confidence > 60:
+        return f"""
+## 🔍 Issue Identified (Confidence: {confidence}%)
+
+📌 **Issue:** {best['issue']}  
+🛠 **Fix:** {best['solution']}  
+🎫 **Ticket:** {best['ticket']}
+
+## 📎 Related Tickets
+{chr(10).join([f"- {t}" for t in related])}
+
+## 🤖 AI Insights
+"""
+    else:
+        related_list = "\n".join([f"- {r['ticket']}" for r in results[:3]])
+
+        return f"""
+## 🤖 AI Generated Solution (Low Confidence: {confidence}%)
+
+Possible issue related to: **{query}**
+
+### Steps:
+1. Check logs
+2. Validate configs
+3. Restart services
+
+## 📎 Closest Past Tickets
+{related_list}
+
+## 🤖 Suggested Debugging
+"""
+
+# 🤖 STREAM LLM
 def stream_llm(query, context):
     prompt = f"""
 You are a Senior SRE.
-
-Respond in CLEAN MARKDOWN format:
-- Use headings (##)
-- Use bullet points
-- Use proper code blocks with ```bash
-- No raw symbols like ** in final output
 
 User issue:
 {query}
@@ -50,10 +104,11 @@ User issue:
 Internal knowledge:
 {context}
 
-Instructions:
-- Prioritize internal solution
-- Give step-by-step troubleshooting
-- Include commands
+Give response in clean markdown:
+- Root cause
+- Step-by-step fix
+- Commands (use ```bash)
+- Prevention tips
 """
 
     response = requests.post(
@@ -69,25 +124,33 @@ Instructions:
     for line in response.iter_lines():
         if line:
             try:
-                data = line.decode("utf-8")
-                import json
-                parsed = json.loads(data)
-                yield parsed.get("response", "")
+                data = json.loads(line.decode("utf-8"))
+                if "response" in data:
+                    yield data["response"]
             except:
                 continue
 
-# 🚀 API endpoint
+# 🚀 MAIN API
 @app.get("/ask-stream")
 def ask_stream(query: str):
     results, scores = search(query)
-    context = "\n".join([r['solution'] for r in results])
 
-    return StreamingResponse(
-        stream_llm(query, context),
-        media_type="text/plain"
-    )
+    base_response = build_response(query, results, scores)
 
-# Optional root
+    def final_stream():
+        yield base_response
+
+        context = "\n".join([
+            f"Issue: {r['issue']} | Solution: {r['solution']}"
+            for r in results
+        ])
+
+        for chunk in stream_llm(query, context):
+            yield chunk
+
+    return StreamingResponse(final_stream(), media_type="text/plain")
+
+
 @app.get("/")
 def home():
     return {"message": "SREGPT running 🚀"}

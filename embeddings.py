@@ -1,87 +1,42 @@
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
-import faiss
-import pickle
-import numpy as np
+import pandas as pd
 from sentence_transformers import SentenceTransformer
-import requests
+import faiss
+import numpy as np
+import pickle
 
-app = FastAPI()
-
-# ✅ CORS (IMPORTANT for UI)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Load model + index
 model = SentenceTransformer('all-MiniLM-L6-v2')
-index = faiss.read_index("data/index.faiss")
-data = pickle.load(open("data/data.pkl", "rb"))
 
-# 🔍 Search function
-def search(query, k=3):
-    q_emb = model.encode([query])
-    D, I = index.search(np.array(q_emb), k)
+def build_index():
+    # ✅ FIXED HERE
+    df = pd.read_csv("data/issues.csv")
 
-    results = [data[i] for i in I[0]]
-    scores = D[0]
+    # 🔥 FORCE CORRECT MAPPING
+    df = df.rename(columns={
+        "Issue Subject": "issue",
+        "Issue Solution": "solution",
+        "Ticket ID": "ticket"
+    })
 
-    return results, scores
+    # Safety fallback
+    df["issue"] = df["issue"].fillna("")
+    df["solution"] = df["solution"].fillna("")
+    df["ticket"] = df["ticket"].fillna("N/A")
 
-# 🤖 Streaming LLM (Ollama)
-def stream_llm(query, context):
-    prompt = f"""
-You are a Senior SRE.
+    # Ensure correct structure
+    records = df[["issue", "solution", "ticket"]].to_dict(orient="records")
 
-User issue:
-{query}
+    texts = [r["issue"] + " " + r["solution"] for r in records]
 
-Internal knowledge:
-{context}
+    embeddings = model.encode(texts)
 
-Instructions:
-- Prioritize internal solution
-- Give step-by-step troubleshooting
-- Include commands
-"""
+    index = faiss.IndexFlatL2(len(embeddings[0]))
+    index.add(np.array(embeddings))
 
-    response = requests.post(
-        "http://localhost:11434/api/generate",
-        json={
-            "model": "llama3",
-            "prompt": prompt,
-            "stream": True
-        },
-        stream=True
-    )
+    # Save
+    faiss.write_index(index, "data/index.faiss")
+    pickle.dump(records, open("data/data.pkl", "wb"))
 
-    for line in response.iter_lines():
-        if line:
-            try:
-                data = line.decode("utf-8")
-                import json
-                parsed = json.loads(data)
-                yield parsed.get("response", "")
-            except:
-                continue
+    print("✅ Index rebuilt with correct schema")
 
-# 🚀 API endpoint
-@app.get("/ask-stream")
-def ask_stream(query: str):
-    results, scores = search(query)
-    context = "\n".join([r['solution'] for r in results])
-
-    return StreamingResponse(
-        stream_llm(query, context),
-        media_type="text/plain"
-    )
-
-# Optional root
-@app.get("/")
-def home():
-    return {"message": "SREGPT running 🚀"}
+if __name__ == "__main__":
+    build_index()
