@@ -1,6 +1,6 @@
 # SREGPT
 
-SREGPT is a local retrieval-augmented troubleshooting assistant for SRE and DevOps incidents. It uses FastAPI for the API layer, FAISS for similarity search over past incident records, SentenceTransformers for embeddings, and Ollama with `llama3` for local answer generation.
+SREGPT is a local retrieval-augmented troubleshooting assistant for SRE and DevOps incidents. It uses FastAPI for the API layer, FAISS for similarity search over past incident records, SentenceTransformers for embeddings, and Ollama with `deepseek-coder:6.7b` for local answer generation.
 
 ## Preview
 
@@ -37,16 +37,17 @@ SREGPT is a local retrieval-augmented troubleshooting assistant for SRE and DevO
           ↓
    ┌────────────────────────────┐
    │  Decision Engine           │
-   │ (Threshold Logic)          │
+   │ (Top-K + Filtering)        │
    └──────┬─────────────┬───────┘
           ↓             ↓
  High Match ✅      Low Match ❌
      ↓                  ↓
 ┌──────────────┐  ┌────────────────┐
 │ Return KB    │  │  Ollama LLM    │
-│ Solution     │  │ (llama3)       │
-│ + Ticket     │  └──────┬─────────┘
-└──────┬───────┘         ↓
+│ Solution     │  │ (deepseek-     │
+│ + Ticket     │  │ coder:6.7b)    │
+└──────┬───────┘  └──────┬─────────┘
+       ↓                ↓
        └──────────→ Final Response
 ```
 
@@ -56,9 +57,10 @@ Runtime flow:
 2. FastAPI receives the request and passes it into the query-processing flow.
 3. The query is embedded with `all-MiniLM-L6-v2` using SentenceTransformers.
 4. FAISS searches the internal incident vectors built from the CSV knowledge base.
-5. The decision layer evaluates the best match score against the confidence threshold.
-6. For a strong internal match, the app returns the matched solution and ticket context.
-7. For a weak match, the app calls Ollama with `llama3` to generate a broader troubleshooting response.
+5. FAISS returns the top 50 nearest incident matches.
+6. The app converts raw scores into a simple confidence value and filters out low-relevance matches.
+7. The filtered result set is capped before being sent to Ollama as grounded incident context.
+8. Ollama generates the final streamed troubleshooting response.
 
 ## Tech Stack
 
@@ -69,7 +71,7 @@ Runtime flow:
 - SentenceTransformers
 - Pandas
 - Ollama
-- Llama 3
+- DeepSeek Coder 6.7B via Ollama
 - HTML/CSS/JavaScript frontend
 
 ## Project Structure
@@ -94,7 +96,7 @@ Make sure these are available on your machine:
 - Python 3.9 or later
 - `pip`
 - Ollama installed locally
-- The `llama3` model pulled in Ollama
+- The `deepseek-coder:6.7b` model pulled in Ollama
 
 ## Setup
 
@@ -143,13 +145,13 @@ ollama serve
 If the model is not available yet, pull it first:
 
 ```sh
-ollama pull llama3
+ollama pull deepseek-coder:6.7b
 ```
 
 You can test the model with:
 
 ```sh
-ollama run llama3
+ollama run deepseek-coder:6.7b
 ```
 
 ## Run the API
@@ -206,7 +208,7 @@ Example response:
 
 ```json
 {
-  "message": "SREGPT running 🚀"
+  "message": "SREGPT Reasoning Mode 🚀"
 }
 ```
 
@@ -214,8 +216,10 @@ Example response:
 
 Streams a troubleshooting response built from:
 
-- top FAISS matches from the internal ticket dataset
-- Llama 3 generation through Ollama
+- top 50 FAISS matches from the internal ticket dataset
+- score-based relevance filtering with a `0.6` threshold
+- a final capped context of up to 20 incidents
+- `deepseek-coder:6.7b` generation through Ollama
 
 ## How Retrieval Works
 
@@ -228,10 +232,18 @@ Streams a troubleshooting response built from:
 [`app.py`](/Users/sackashyap/Documents/mytech/sregpt/app.py) then:
 
 1. embeds the user query
-2. searches the FAISS index
-3. ranks the nearest records
-4. builds a markdown response scaffold
-5. streams the final grounded answer from Ollama
+2. searches the FAISS index with `k=50`
+3. converts each raw score into a simple confidence estimate using `1 / (1 + score)`
+4. filters out low-relevance matches using a `0.6` threshold
+5. caps the filtered context to 20 incidents to avoid overloading the prompt
+6. sends the remaining incident context to Ollama
+7. streams the final grounded answer back to the client
+
+Current retrieval settings in [`app.py`](/Users/sackashyap/Documents/mytech/sregpt/app.py):
+
+- FAISS search scope: `k=50`
+- Filtering function: `filter_results(results, scores, threshold=0.6)`
+- Max incident context sent to the LLM: `20`
 
 ## Common Commands
 
@@ -282,7 +294,7 @@ python embeddings.py
 Check:
 
 - Ollama is running
-- `llama3` is available locally
+- `deepseek-coder:6.7b` is available locally
 - `data/issues.csv` exists
 - `data/index.faiss` and `data/data.pkl` were built from the current CSV
 

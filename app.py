@@ -24,7 +24,7 @@ model = SentenceTransformer('all-MiniLM-L6-v2')
 index = faiss.read_index("data/index.faiss")
 data = pickle.load(open("data/data.pkl", "rb"))
 
-# 🔥 FIX: Normalize data keys (IMPORTANT)
+# 🔥 Normalize data
 def normalize_record(record):
     return {
         "issue": record.get("issue") or record.get("Issue Subject") or "",
@@ -32,89 +32,74 @@ def normalize_record(record):
         "ticket": record.get("ticket") or record.get("Ticket ID") or "N/A"
     }
 
-# 🔍 SEARCH
-def search(query, k=5):
+# 🔍 Search Top K
+def search(query, k=50):
     q_emb = model.encode([query])
     D, I = index.search(np.array(q_emb), k)
 
-    raw_results = [data[i] for i in I[0]]
-    results = [normalize_record(r) for r in raw_results]
-
+    results = [normalize_record(data[i]) for i in I[0]]
     scores = D[0]
+
     return results, scores
 
-# 🧠 RESPONSE BUILDER
-def build_response(query, results, scores):
-    best_score = scores[0]
 
-    confidence = round(100 * (1 / (1 + best_score)), 2)
+def filter_results(results, scores, threshold=0.7):
+    filtered = []
 
-    best = results[0]
+    for r, score in zip(results, scores):
+        confidence = 1 / (1 + score)
 
-    # Related tickets (clean + no duplicates)
-    related = []
-    for r in results[1:5]:
-        t = r.get("ticket", "N/A")
-        if t != "N/A" and t not in related:
-            related.append(t)
+        if confidence > threshold:
+            filtered.append(r)
 
-    if not related:
-        related = ["N/A"]
+    return filtered
 
-    if confidence > 60:
-        return f"""
-## 🔍 Issue Identified (Confidence: {confidence}%)
+# 🧠 Build reasoning context
+def build_context(results):
+    context = []
+    for r in results:
+        context.append(
+            f"Ticket: {r['ticket']} | Issue: {r['issue']} | Fix: {r['solution']}"
+        )
+    return "\n".join(context)
 
-📌 **Issue:** {best['issue']}  
-🛠 **Fix:** {best['solution']}  
-🎫 **Ticket:** {best['ticket']}
-
-## 📎 Related Tickets
-{chr(10).join([f"- {t}" for t in related])}
-
-## 🤖 AI Insights
-"""
-    else:
-        related_list = "\n".join([f"- {r['ticket']}" for r in results[:3]])
-
-        return f"""
-## 🤖 AI Generated Solution (Low Confidence: {confidence}%)
-
-Possible issue related to: **{query}**
-
-### Steps:
-1. Check logs
-2. Validate configs
-3. Restart services
-
-## 📎 Closest Past Tickets
-{related_list}
-
-## 🤖 Suggested Debugging
-"""
-
-# 🤖 STREAM LLM
-def stream_llm(query, context):
+# 🤖 Reasoning LLM (CORE UPGRADE)
+def stream_reasoning(query, context):
     prompt = f"""
-You are a Senior SRE.
+You are a Senior SRE with strong reasoning ability.
 
-User issue:
+User Issue:
 {query}
 
-Internal knowledge:
+Past Incidents:
 {context}
 
-Give response in clean markdown:
-- Root cause
-- Step-by-step fix
-- Commands (use ```bash)
-- Prevention tips
+Instructions:
+- Analyze ALL incidents carefully
+- Identify patterns
+- Find the most likely root cause
+- Do NOT just repeat solutions
+- Think like a production SRE
+
+Output format:
+
+## 🔍 Root Cause
+Explain WHY this is happening
+
+## 🛠 Fix Steps
+Step-by-step actionable fix
+
+## 🎫 Related Tickets
+List relevant tickets
+
+## 📊 Confidence
+Explain WHY you are confident (not percentage only)
 """
 
     response = requests.post(
         "http://localhost:11434/api/generate",
         json={
-            "model": "llama3",
+            "model": "deepseek-coder:6.7b",   # 🔥 change here if needed
             "prompt": prompt,
             "stream": True
         },
@@ -133,19 +118,24 @@ Give response in clean markdown:
 # 🚀 MAIN API
 @app.get("/ask-stream")
 def ask_stream(query: str):
-    results, scores = search(query)
+    results, scores = search(query, k=50)
+    filtered_results = filter_results(results, scores, threshold=0.6)
+    filtered_results = filtered_results[:20]
 
-    base_response = build_response(query, results, scores)
+    context = build_context(filtered_results)
 
     def final_stream():
-        yield base_response
+        # 🔥 First show detected issue (quick UX)
+        yield f"""
+## 🔍 Issue Analysis Started
 
-        context = "\n".join([
-            f"Issue: {r['issue']} | Solution: {r['solution']}"
-            for r in results
-        ])
+📌 Query: {query}
 
-        for chunk in stream_llm(query, context):
+🤖 Found {len(filtered_results)} relevant incidents (from {len(results)} total matches)
+"""
+
+        # 🔥 Then stream reasoning output
+        for chunk in stream_reasoning(query, context):
             yield chunk
 
     return StreamingResponse(final_stream(), media_type="text/plain")
@@ -153,4 +143,4 @@ def ask_stream(query: str):
 
 @app.get("/")
 def home():
-    return {"message": "SREGPT running 🚀"}
+    return {"message": "SREGPT Reasoning Mode 🚀"}
