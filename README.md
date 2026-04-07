@@ -4,7 +4,7 @@ SREGPT is a local retrieval-augmented troubleshooting assistant for SRE and DevO
 
 ## Preview
 
-![SREGPT UI](docs/image.png)
+![SREGPT UI](docs/latest-preview.png)
 
 ## Architecture
 
