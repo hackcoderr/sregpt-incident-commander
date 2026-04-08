@@ -111,7 +111,7 @@ Install dependencies:
 
 ```sh
 pip install -r requirements.txt
-```
+```   
 
 ## Prepare the Knowledge Base
 
@@ -120,7 +120,7 @@ The retrieval layer uses [`data/issues.csv`](/Users/sackashyap/Documents/mytech/
 To build or rebuild the FAISS index:
 
 ```sh
-python embeddings.py
+python embeddings.py a
 ```
 
 This generates:
